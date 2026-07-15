@@ -7,7 +7,7 @@ TMPFILE=$(mktemp /tmp/tmux-link-window.XXXXXX)
 # Build candidate list, one line per window, excluding current session
 # Format: "session_name:window_index  [session_name] window_name"
 tmux list-windows -a -F '#{session_name}:#{window_index} #{window_name}' \
-  | grep "^q_" | column -t > "$TMPFILE.list"
+  | grep -v "^${CURRENT_SESSION}:" | column -t > "$TMPFILE.list"
 
 if [[ ! -s "$TMPFILE.list" ]]; then
   tmux display-message "No windows available in other sessions."
