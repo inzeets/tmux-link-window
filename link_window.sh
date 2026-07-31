@@ -4,11 +4,27 @@
 CURRENT_SESSION=$(tmux display-message -p '#S')
 TMPFILE=$(mktemp /tmp/tmux-link-window.XXXXXX)
 
-# Build candidate list, one line per window, excluding current session
-# Format: "session_name:window_index  [session_name] window_name"
-#tmux list-windows -a -F '#{session_name}:#{window_index} #{window_name}' \
-tmux list-windows -a -F '#{window_name} #{session_name}:#{window_index}' \
-  | grep -v "^${CURRENT_SESSION}:" | column -t > "$TMPFILE.list"
+# Build candidate list, one line per window, excluding current session.
+# Display: "window_name  location  [~origin]  session:index(hidden target, last field)"
+#   main:N        - window N of the main (root) session
+#   pop(name:N):M - window M of the popup belonging to main window name:N
+#   ~...          - where a linked window was born, when != listed session
+MAIN_SESSION=$(tmux list-sessions -F '#{session_name}' | grep -v '^popup/' | head -1)
+{
+  tmux list-windows -t "$MAIN_SESSION" -F $'MAP\t#{window_id}\t#{window_name}:#{window_index}'
+  tmux list-windows -a -F $'WIN\t#{session_name}\t#{window_index}\t#{window_name}\t#{@born}'
+} | awk -F'\t' -v cur="$CURRENT_SESSION" -v main="$MAIN_SESSION" '
+  function pretty(sess,   id) {                # session name -> friendly location
+    if (sess == main) return "main"
+    if (sess ~ /^popup\//) { id = substr(sess, 7); return "pop(" (id in map ? map[id] : id) ")" }
+    return sess
+  }
+  $1 == "MAP" { map[$2] = $3; next }
+  $2 == cur   { next }
+  {
+    born = ($5 != "" && $5 != $2) ? "~" pretty($5) : ""
+    print $4 "\t" pretty($2) ":" $3 "\t" born "\t" $2 ":" $3
+  }' | column -t -s $'\t' > "$TMPFILE.list"
 
 if [[ ! -s "$TMPFILE.list" ]]; then
   tmux display-message "No windows available in other sessions."
@@ -27,7 +43,7 @@ tmux popup -E -w 95% -h 90% -T " Link Window " \
   "fzf --layout reverse \
        --prompt='Link window > ' \
        --bind 'ctrl-r:toggle-sort,ctrl-/:toggle-preview,alt-up:preview-up,alt-down:preview-down,ctrl-k:change-preview-window:bottom:85%:nowrap|' \
-       --preview 'out=\$(tmux capture-pane -ep -t \$(echo {} | awk \"{print \\\$2}\")); printf \"%s\n\" \"\$out\" | head -n 2; printf \"\033[2m─── %d lines ────────────────────────────────────\033[0m\n\" \$(( \$(printf \"%s\n\" \"\$out\" | wc -l) - 2 )); printf \"%s\n\" \"\$out\" | tail -n +3' \
+       --preview 'out=\$(tmux capture-pane -ep -t \$(echo {} | awk \"{print \\\$NF}\")); printf \"%s\n\" \"\$out\" | head -n 2; printf \"\033[2m─── %d lines ────────────────────────────────────\033[0m\n\" \$(( \$(printf \"%s\n\" \"\$out\" | wc -l) - 2 )); printf \"%s\n\" \"\$out\" | tail -n +3' \
        --preview-window=~3:follow:right:70%:nowrap \
        < '$TMPFILE.list' > '$TMPFILE'"
 
@@ -39,8 +55,8 @@ if [[ ! -s "$TMPFILE" ]]; then
   exit 0
 fi
 
-# First field is "session:index"
-target=$(awk '{print $2}' "$TMPFILE")
+# Last field is "session:index"
+target=$(awk '{print $NF}' "$TMPFILE")
 rm -f "$TMPFILE" "$TMPFILE.list"
 
 [[ -z "$target" ]] && exit 0
