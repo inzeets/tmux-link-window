@@ -12,18 +12,37 @@ TMPFILE=$(mktemp /tmp/tmux-link-window.XXXXXX)
 MAIN_SESSION=$(tmux list-sessions -F '#{session_name}' | grep -v '^popup/' | head -1)
 {
   tmux list-windows -t "$MAIN_SESSION" -F $'MAP\t#{window_id}\t#{window_name}:#{window_index}'
-  tmux list-windows -a -F $'WIN\t#{session_name}\t#{window_index}\t#{window_name}\t#{@born}'
-} | awk -F'\t' -v cur="$CURRENT_SESSION" -v main="$MAIN_SESSION" '
+  tmux list-windows -a -F $'WIN\t#{session_name}\t#{window_index}\t#{window_name}\t#{@born}\t#{@icon}'
+} | awk -F'\t' -v cur="$CURRENT_SESSION" -v main="$MAIN_SESSION" \
+    -v iconmap="$(tmux show -gv @icon_map 2>/dev/null)" '
   function pretty(sess,   id) {                # session name -> friendly location
     if (sess == main) return "main"
     if (sess ~ /^popup\//) { id = substr(sess, 7); return "pop(" (id in map ? map[id] : id) ")" }
     return sess
   }
+  # same icon scheme as the status bar: @icon wins, else prefix -> glyph
+  # from the shared @icon_map ("prefix:icon" pairs, set in .tmux.conf),
+  # and the prefix is display-stripped
+  BEGIN {
+    nmap = split(iconmap, _pairs, " ")
+    for (k = 1; k <= nmap; k++) {
+      split(_pairs[k], _kv, ":"); mpre[k] = _kv[1]; mico[k] = _kv[2]
+    }
+  }
+  function iconized(name, ic,   k) {
+    for (k = 1; k <= nmap; k++)
+      if (index(name, mpre[k]) == 1) {
+        if (ic == "") ic = mico[k]
+        name = substr(name, length(mpre[k]) + 1)
+        break
+      }
+    return ic name
+  }
   $1 == "MAP" { map[$2] = $3; next }
   $2 == cur   { next }
   {
     born = ($5 != "" && $5 != $2) ? "~" pretty($5) : ""
-    print $4 "\t" pretty($2) ":" $3 "\t" born "\t" $2 ":" $3
+    print iconized($4, $6) "\t" pretty($2) ":" $3 "\t" born "\t" $2 ":" $3
   }' | column -t -s $'\t' > "$TMPFILE.list"
 
 if [[ ! -s "$TMPFILE.list" ]]; then
