@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
 # tmux-link-window: fuzzy-find a window from any other session and link it here
+# Enter = link the window; alt-v / alt-s = join its pane into a vertical /
+# horizontal split (vim :vs / :sp sense) of the pane the picker was opened from.
+# alt-j toggles the list between link mode (other sessions only) and join mode
+# (every window except the current one - joins work within the session too).
 
 CURRENT_SESSION=$(tmux display-message -p '#S')
+ORIG_PANE=$(tmux display-message -p '#{pane_id}')
+CURRENT_WINDOW=$(tmux display-message -p '#{window_id}')
 TMPFILE=$(mktemp /tmp/tmux-link-window.XXXXXX)
 
-# Build candidate list, one line per window, excluding current session.
+# Build two candidate lists, one line per window:
+#   .link - excludes the current session (link-window candidates)
+#   .join - excludes only the current window (join-pane candidates)
 # Display: "window_name  location  [~origin]  session:index(hidden target, last field)"
 #   main:N        - window N of the main (root) session
 #   pop(name:N):M - window M of the popup belonging to main window name:N
@@ -12,8 +20,9 @@ TMPFILE=$(mktemp /tmp/tmux-link-window.XXXXXX)
 MAIN_SESSION=$(tmux list-sessions -F '#{session_name}' | grep -v '^popup/' | head -1)
 {
   tmux list-windows -t "$MAIN_SESSION" -F $'MAP\t#{window_id}\t#{window_name}:#{window_index}'
-  tmux list-windows -a -F $'WIN\t#{session_name}\t#{window_index}\t#{window_name}\t#{@born}\t#{@icon}'
-} | awk -F'\t' -v cur="$CURRENT_SESSION" -v main="$MAIN_SESSION" \
+  tmux list-windows -a -F $'WIN\t#{session_name}\t#{window_index}\t#{window_name}\t#{@born}\t#{@icon}\t#{window_id}'
+} | awk -F'\t' -v cur="$CURRENT_SESSION" -v main="$MAIN_SESSION" -v curwin="$CURRENT_WINDOW" \
+    -v linkf="$TMPFILE.linkraw" -v joinf="$TMPFILE.joinraw" \
     -v iconmap="$(tmux show -gv @icon_map 2>/dev/null)" '
   function pretty(sess,   id) {                # session name -> friendly location
     if (sess == main) return "main"
@@ -39,53 +48,87 @@ MAIN_SESSION=$(tmux list-sessions -F '#{session_name}' | grep -v '^popup/' | hea
     return ic name
   }
   $1 == "MAP" { map[$2] = $3; next }
-  $2 == cur   { next }
   {
     born = ($5 != "" && $5 != $2) ? "~" pretty($5) : ""
-    print iconized($4, $6) "\t" pretty($2) ":" $3 "\t" born "\t" $2 ":" $3
-  }' | column -t -s $'\t' > "$TMPFILE.list"
+    line = iconized($4, $6) "\t" pretty($2) ":" $3 "\t" born "\t" $2 ":" $3
+    if ($2 != cur)    print line > linkf
+    if ($7 != curwin) print line > joinf
+  }'
+touch "$TMPFILE.linkraw" "$TMPFILE.joinraw"
+column -t -s $'\t' < "$TMPFILE.linkraw" > "$TMPFILE.link"
+column -t -s $'\t' < "$TMPFILE.joinraw" > "$TMPFILE.join"
+rm -f "$TMPFILE.linkraw" "$TMPFILE.joinraw"
 
-if [[ ! -s "$TMPFILE.list" ]]; then
-  tmux display-message "No windows available in other sessions."
-  rm -f "$TMPFILE" "$TMPFILE.list"
+cleanup() { rm -f "$TMPFILE" "$TMPFILE.link" "$TMPFILE.join"; }
+
+if [[ ! -s "$TMPFILE.link" && ! -s "$TMPFILE.join" ]]; then
+  tmux display-message "No windows available."
+  cleanup
   exit 0
 fi
 
 if ! command -v fzf &>/dev/null; then
   tmux display-message "fzf not found — please install fzf"
-  rm -f "$TMPFILE" "$TMPFILE.list"
+  cleanup
   exit 1
+fi
+
+# Start in link mode; fall back to join mode when no other session exists
+if [[ -s "$TMPFILE.link" ]]; then
+  START_LIST="$TMPFILE.link"; START_PROMPT='Link window > '
+else
+  START_LIST="$TMPFILE.join"; START_PROMPT='Join window > '
 fi
 
 # Run fzf inside a popup; write selection to temp file (only way to get output back)
 tmux popup -E -w 95% -h 90% -T " Link Window " \
   "fzf --layout reverse \
-       --prompt='Link window > ' \
+       --prompt='$START_PROMPT' \
+       --expect=alt-v,alt-s \
+       --header='enter: link window   M-j: link/join list   M-v: vsplit join   M-s: split join' \
+       --bind 'alt-j:transform{case \$FZF_PROMPT in Join*) echo \"reload(cat $TMPFILE.link)+change-prompt(Link window > )\";; *) echo \"reload(cat $TMPFILE.join)+change-prompt(Join window > )\";; esac}' \
        --bind 'ctrl-r:toggle-sort,ctrl-/:toggle-preview,alt-up:preview-up,alt-down:preview-down,ctrl-k:change-preview-window:bottom:85%:nowrap|' \
        --preview 'out=\$(tmux capture-pane -ep -t \$(echo {} | awk \"{print \\\$NF}\")); printf \"%s\n\" \"\$out\" | head -n 2; printf \"\033[2m─── %d lines ────────────────────────────────────\033[0m\n\" \$(( \$(printf \"%s\n\" \"\$out\" | wc -l) - 2 )); printf \"%s\n\" \"\$out\" | tail -n +3' \
        --preview-window=~3:follow:right:70%:nowrap \
-       < '$TMPFILE.list' > '$TMPFILE'"
+       < '$START_LIST' > '$TMPFILE'"
 
 #--preview 'out=\$(tmux capture-pane -ep -t \$(echo {} | awk \"{print \\\$2}\")); printf \"%s\n\" \"\$out\" | head -n 3; label=\" \$(( \$(printf \"%s\n\" \"\$out\" | wc -l) - 3 )) lines \"; pad=\$(( (FZF_PREVIEW_COLUMNS - \${#label}) / 2 )); printf \"\033[2m\"; printf \"─%.0s\" \$(seq \$pad); printf \"%s\" \"\$label\"; printf \"─%.0s\" \$(seq \$(( FZF_PREVIEW_COLUMNS - pad - \${#label} )) ); printf \"\033[0m\n\"; printf \"%s\n\" \"\$out\" | tail -n +4' \
 
 # If user cancelled (Esc / q), tmpfile will be empty
 if [[ ! -s "$TMPFILE" ]]; then
-  rm -f "$TMPFILE" "$TMPFILE.list"
+  cleanup
   exit 0
 fi
 
-# Last field is "session:index"
-target=$(awk '{print $NF}' "$TMPFILE")
-rm -f "$TMPFILE" "$TMPFILE.list"
+# With --expect: line 1 = key pressed ("" for enter), line 2 = selection.
+# Last field of the selection is "session:index".
+key=$(sed -n '1p' "$TMPFILE")
+target=$(sed -n '2p' "$TMPFILE" | awk '{print $NF}')
+cleanup
 
 [[ -z "$target" ]] && exit 0
 
 target_session="${target%%:*}"
 target_index="${target##*:}"
 
-if tmux link-window -s "${target_session}:${target_index}" -t "${CURRENT_SESSION}:"; then
-  tmux display-message "Linked [${target_session}:${target_index}] into session '${CURRENT_SESSION}'"
-else
-  tmux display-message "Failed to link window."
-fi
+case "$key" in
+  alt-v|alt-s)
+    # vim sense: alt-v = side-by-side (tmux -h), alt-s = stacked (tmux -v)
+    if [[ "$key" == alt-v ]]; then dir=-h; label=vertical; else dir=-v; label=horizontal; fi
+    if tmux join-pane "$dir" -s "${target_session}:${target_index}" -t "$ORIG_PANE"; then
+      tmux display-message "Joined [${target_session}:${target_index}] as a $label split"
+    else
+      tmux display-message "Failed to join window."
+    fi
+    ;;
+  *)
+    if [[ "$target_session" == "$CURRENT_SESSION" ]]; then
+      tmux display-message "Window is already in this session - use M-v/M-s to join it as a split."
+    elif tmux link-window -s "${target_session}:${target_index}" -t "${CURRENT_SESSION}:"; then
+      tmux display-message "Linked [${target_session}:${target_index}] into session '${CURRENT_SESSION}'"
+    else
+      tmux display-message "Failed to link window."
+    fi
+    ;;
+esac
 
