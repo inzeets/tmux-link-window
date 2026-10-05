@@ -94,8 +94,8 @@ fi
 tmux popup -E -w 95% -h 90% -T " Link Window " \
   "fzf --layout reverse \
        --prompt='$START_PROMPT' \
-       --expect=alt-v,alt-s \
-       --header='enter: link window   M-j: link/join list   M-w: swap list   M-b/M-a: move before/after list   M-v: vsplit join   M-s: split join' \
+       --expect=alt-v,alt-s,alt-p \
+       --header='enter: link window   M-j: link/join list   M-w: swap list   M-b/M-a: move before/after list   M-v: vsplit join   M-s: split join   M-p: parking lot' \
        --bind 'alt-j:transform{case \$FZF_PROMPT in Join*) echo \"reload(cat $TMPFILE.link)+change-prompt(Link window > )+execute-silent(echo link > $TMPFILE.mode)\";; *) echo \"reload(cat $TMPFILE.join)+change-prompt(Join window > )+execute-silent(echo join > $TMPFILE.mode)\";; esac}' \
        --bind 'alt-w:transform{case \$FZF_PROMPT in Swap*) echo \"reload(cat $TMPFILE.link)+change-prompt(Link window > )+execute-silent(echo link > $TMPFILE.mode)\";; *) echo \"reload(cat $TMPFILE.join)+change-prompt(Swap window > )+execute-silent(echo swap > $TMPFILE.mode)\";; esac}' \
        --bind 'alt-b:transform{case \$FZF_PROMPT in Move-before*) echo \"reload(cat $TMPFILE.link)+change-prompt(Link window > )+execute-silent(echo link > $TMPFILE.mode)\";; *) echo \"reload(cat $TMPFILE.join)+change-prompt(Move-before > )+execute-silent(echo move-before > $TMPFILE.mode)\";; esac}' \
@@ -119,6 +119,15 @@ key=$(sed -n '1p' "$TMPFILE")
 target=$(sed -n '2p' "$TMPFILE" | awk '{print $NF}')
 mode=$(cat "$TMPFILE.mode" 2>/dev/null)
 cleanup
+
+# alt-p: hand over to the parking-lot picker (~/bin/tmux_park, parked agent
+# sessions and live ones in one list) when the host has it
+if [[ "$key" == alt-p ]]; then
+  PARK=${TMUX_PARK:-$HOME/bin/tmux_park}
+  [[ -x "$PARK" ]] && exec "$PARK" --lot "$ORIG_PANE"
+  tmux display-message "No parking lot here (${PARK} not found)."
+  exit 0
+fi
 
 [[ -z "$target" ]] && exit 0
 

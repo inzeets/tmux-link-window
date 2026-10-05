@@ -10,6 +10,7 @@
 - `M-w` - toggle swap mode: enter swaps the pick with the current window
 - `M-b` / `M-a` - toggle move mode: enter moves the pick to before / after the current window
 - `M-v` / `M-s` - join the pick as a vertical / horizontal split (instant, vim sense)
+- `M-p` - hand over to the parking lot (`~/bin/tmux_park --lot`, or `$TMUX_PARK`) when the host has it
 
 ## Options
 `@link_window_key` - to set custom key
